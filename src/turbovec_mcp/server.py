@@ -17,7 +17,23 @@ from mcp.server.fastmcp import FastMCP
 from . import store
 from .config import load_config
 
-mcp = FastMCP("turbovec-mcp")
+_INSTRUCTIONS = """\
+turbovec is semantic (embedding) code search over this repo's index. Use it for
+FUZZY DISCOVERY - finding code by concept when you don't know the symbol or file.
+
+Routing (do this before reaching for grep/Read):
+- Conceptual / "where is X handled" / "code related to <feature>" / locating a
+  feature you can't name a symbol for -> call `tv_search` FIRST, then `tv_fetch`
+  the few hits you want. Treat fetched source as already read; don't re-Read it.
+- You can NAME the symbol and want its definition / callers / impact -> that's
+  codegraph's job (exact graph), not turbovec.
+- An exact literal string -> grep.
+
+Default for vague "search the codebase for the <concept>" requests is tv_search,
+not grep: it matches meaning, so it finds code whose wording differs from the
+query. Two-step always: tv_search (terse triage) -> tv_fetch (full source)."""
+
+mcp = FastMCP("turbovec-mcp", instructions=_INSTRUCTIONS)
 _CFG = load_config()
 
 

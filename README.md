@@ -70,6 +70,19 @@ Claude Code:
 claude mcp add turbovec -- uvx turbovec-mcp
 ```
 
+## Chunking
+
+AST-aware via [tree-sitter](https://tree-sitter.github.io/). Each function /
+class / method that fits the embedder becomes one chunk on clean boundaries; a
+god-class too large to embed whole is split into its methods; any lines not
+covered by a definition (imports, top-level code, a giant leaf function) are
+line-windowed, so coverage is total. Unsupported languages / parse failures fall
+back to plain line-window chunking - nothing is skipped.
+
+Supported out of the box: Python, JS/TS/TSX, Go, Rust, Java, Kotlin, Scala,
+Swift, C/C++, C#, Ruby, PHP, Lua, Perl, R, Julia, Bash, Fortran (f90/f95).
+Add more file extensions with `TURBOVEC_EXTRA_EXTENSIONS`.
+
 ## Tools
 
 - `tv_index(path=".")` - (re)build the index for a repo. Run once before

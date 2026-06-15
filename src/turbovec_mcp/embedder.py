@@ -43,17 +43,44 @@ def _request(client: httpx.Client, cfg: Config, inputs: list[str]) -> list[list[
         raise ValueError("embedding response item missing 'embedding' field") from e
 
 
+def _embed_one(client: httpx.Client, cfg: Config, text: str) -> list[float]:
+    """Embed a single input, shrinking it on failure until it fits the context.
+
+    Token-dense inputs (numeric/matrix data) can exceed the embedder's context
+    even under the char cap; we back off by 33% per try rather than fail the run.
+    """
+    t = text
+    while True:
+        try:
+            return _request(client, cfg, [t])[0]
+        except httpx.HTTPStatusError:
+            if len(t) <= 256:
+                raise
+            t = t[: (len(t) * 2) // 3]
+
+
 def embed(texts: Iterable[str], cfg: Config, *, is_query: bool = False) -> np.ndarray:
-    """Embed texts -> float32 array of shape (n, dim). Empty input -> (0, 0)."""
+    """Embed texts -> float32 array of shape (n, dim). Empty input -> (0, 0).
+
+    Batches for speed; on a batch failure (e.g. one over-long item) it falls
+    back to per-item embedding with shrink-to-fit, so one bad chunk never aborts
+    the whole index.
+    """
     prefix = cfg.query_prefix if is_query else cfg.doc_prefix
-    inputs = [prefix + t for t in texts]
+    cap = cfg.max_embed_chars
+    inputs = [prefix + (t[:cap] if len(t) > cap else t) for t in texts]
     if not inputs:
         return np.empty((0, 0), dtype=np.float32)
 
     vectors: list[list[float]] = []
     with httpx.Client(timeout=cfg.timeout) as client:
         for batch in _batches(inputs, cfg.batch_size):
-            vectors.extend(_request(client, cfg, batch))
+            try:
+                vectors.extend(_request(client, cfg, batch))
+            except httpx.HTTPStatusError:
+                # Isolate the offender: embed each item, shrinking as needed.
+                for item in batch:
+                    vectors.append(_embed_one(client, cfg, item))
     return np.asarray(vectors, dtype=np.float32)
 
 

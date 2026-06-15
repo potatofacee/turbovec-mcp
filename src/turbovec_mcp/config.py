@@ -9,11 +9,47 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-# Directories / files commonly worth skipping when walking a repo.
+# Dependency / build / cache / tooling-output directories, curated from the
+# github/gitignore templates (mirrors codegraph's DEFAULT_IGNORE_DIRS). Excluded
+# even with no .gitignore so the index is your code, not third-party noise.
+# First-party-prone names (lib, app, bin, src, deps, packages) are deliberately
+# omitted so real source is never hidden. Honored .gitignore handles the rest.
 DEFAULT_SKIP_DIRS = frozenset({
-    ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__",
-    "dist", "build", "target", ".turbovec", ".mypy_cache", ".pytest_cache",
-    ".idea", ".vscode", ".cache",
+    # VCS / our own data
+    ".git", ".hg", ".svn", ".turbovec", ".codegraph",
+    # JS / TS dependency dirs
+    "node_modules", "bower_components", "jspm_packages", "web_modules",
+    ".yarn", ".pnpm-store",
+    # JS / TS framework & bundler output
+    ".next", ".nuxt", ".svelte-kit", ".turbo", ".vite", ".parcel-cache",
+    ".angular", ".docusaurus", "storybook-static", ".vinxi", ".nitro",
+    "out-tsc", ".vercel", ".netlify", ".wrangler",
+    # Build output (cross-ecosystem)
+    "dist", "build", "out", ".output",
+    # Test / coverage
+    "coverage", ".nyc_output",
+    # Python
+    "__pycache__", "__pypackages__", ".venv", "venv", ".pixi", ".pdm-build",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".nox",
+    ".hypothesis", ".ipynb_checkpoints", ".eggs",
+    # Rust / JVM (Maven, Gradle, Scala)
+    "target", ".gradle",
+    # .NET
+    "obj",
+    # Vendored deps (Go, PHP/Composer, Ruby/Bundler)
+    "vendor",
+    # Swift / iOS
+    ".build", "Pods", "Carthage", "DerivedData", ".swiftpm",
+    # Dart / Flutter
+    ".dart_tool", ".pub-cache",
+    # Native (Android NDK, C/C++ deps)
+    ".cxx", ".externalNativeBuild", "vcpkg_installed",
+    # Scala tooling
+    ".bloop", ".metals",
+    # Lua / Luau
+    "lua_modules", ".luarocks",
+    # Generic cache / IDE
+    ".cache", ".idea", ".vscode",
 })
 
 # Text/code extensions to index. Everything else is skipped.
@@ -47,6 +83,9 @@ class Config:
     # Embedding request batching + timeout.
     batch_size: int = _int("TURBOVEC_BATCH_SIZE", 64)
     timeout: float = float(os.environ.get("TURBOVEC_TIMEOUT", "120"))
+    # Hard cap on chars sent per input, so a long chunk can't exceed the
+    # embedder's context window (nomic = 2048 tokens ~ 6-8k chars) and 500.
+    max_embed_chars: int = _int("TURBOVEC_MAX_EMBED_CHARS", 1800)
 
     # turbovec quantization: 2 or 4 bits per coordinate (4 = better recall).
     bit_width: int = _int("TURBOVEC_BIT_WIDTH", 4)
@@ -68,6 +107,14 @@ class Config:
         if not extra:
             return DEFAULT_SKIP_DIRS
         return DEFAULT_SKIP_DIRS | {d.strip() for d in extra.split(",") if d.strip()}
+
+    def exclude_globs(self) -> tuple[str, ...]:
+        """Glob patterns matched against repo-relative paths to omit.
+
+        e.g. TURBOVEC_EXCLUDE="thirdparty/*,*_pb2.py,**/generated/**"
+        """
+        raw = os.environ.get("TURBOVEC_EXCLUDE", "")
+        return tuple(g.strip() for g in raw.split(",") if g.strip())
 
 
 def load_config() -> Config:

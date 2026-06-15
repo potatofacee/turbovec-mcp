@@ -22,7 +22,8 @@ from typing import Optional
 import numpy as np
 from turbovec import IdMapIndex
 
-from .chunker import Chunk, iter_chunks
+from . import chunker
+from .chunker import Chunk
 from .config import Config
 from .embedder import embed, probe_dim
 
@@ -40,11 +41,15 @@ def _paths(root: Path) -> tuple[Path, Path]:
     return d / "index.tvim", d / "meta.json"
 
 
-def build(root: Path, cfg: Config) -> dict:
-    """(Re)build the index for `root` from scratch. Returns a status dict."""
+def build(root: Path, cfg: Config, *, progress=None) -> dict:
+    """(Re)build the index for `root` from scratch. Returns a status dict.
+
+    `progress`, if given, is called as progress(files_done, files_total) after
+    each file so the caller can render a status line.
+    """
     root = root.resolve()
-    chunks: list[Chunk] = list(iter_chunks(root, cfg))
-    if not chunks:
+    files = chunker.list_files(root, cfg)
+    if not files:
         raise ValueError(f"no indexable files found under {root}")
 
     dim = probe_dim(cfg)
@@ -53,7 +58,21 @@ def build(root: Path, cfg: Config) -> dict:
             f"embedding dimension {dim} is not a positive multiple of 8, which "
             f"turbovec requires - check TURBOVEC_EMBED_MODEL"
         )
-    vectors = embed((c.text for c in chunks), cfg)
+
+    chunks: list[Chunk] = []
+    vec_blocks: list[np.ndarray] = []
+    total = len(files)
+    for i, path in enumerate(files, 1):
+        fchunks = chunker.chunks_for_file(path, root, cfg)
+        if fchunks:
+            vec_blocks.append(embed((c.text for c in fchunks), cfg))
+            chunks.extend(fchunks)
+        if progress:
+            progress(i, total)
+    if not chunks:
+        raise ValueError(f"files found but no indexable content under {root}")
+
+    vectors = np.vstack(vec_blocks)
     ids = np.arange(len(chunks), dtype=np.uint64)
 
     index = IdMapIndex(dim=dim, bit_width=cfg.bit_width)

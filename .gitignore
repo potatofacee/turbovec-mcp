@@ -1,0 +1,16 @@
+# build / packaging
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# venvs
+.venv/
+venv/
+
+# turbovec indexes (per-repo)
+.turbovec/
+
+# os
+.DS_Store

@@ -156,7 +156,19 @@ def _read_slice(root: Path, rel: str, start: int, end: int) -> str:
     return "\n".join(lines[start - 1 : end])
 
 
-def search(root: Path, query: str, k: int, cfg: Config, *, compact: bool = False) -> list[dict]:
+def _signature(root: Path, rel: str, start: int, end: int) -> str:
+    """First non-blank line of a chunk - the triage hint for search results."""
+    for line in _read_slice(root, rel, start, end).splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def search(root: Path, query: str, k: int, cfg: Config) -> list[dict]:
+    """Terse triage: nearest chunks as score + location + signature line.
+
+    No source bodies - call fetch() with the locations you want to read.
+    """
     root = root.resolve()
     index, meta = _load_cached(root)
 
@@ -172,13 +184,37 @@ def search(root: Path, query: str, k: int, cfg: Config, *, compact: bool = False
         c = chunks.get(str(int(cid)))
         if c is None:
             continue  # index/meta drift (shouldn't happen with full rebuilds)
-        hit = {
+        hits.append({
             "path": c["path"],
             "start_line": c["start_line"],
             "end_line": c["end_line"],
             "score": float(score),
-        }
-        if not compact:
-            hit["text"] = _read_slice(root, c["path"], c["start_line"], c["end_line"])
-        hits.append(hit)
+            "signature": _signature(root, c["path"], c["start_line"], c["end_line"]),
+        })
     return hits
+
+
+def fetch(root: Path, locations: list[str]) -> list[dict]:
+    """Full source for explicit "path:start-end" locations from search results."""
+    root = root.resolve()
+    out: list[dict] = []
+    for loc in locations:
+        path, _, span = loc.rpartition(":")
+        start_s, _, end_s = span.partition("-")
+        try:
+            start, end = int(start_s), int(end_s)
+        except ValueError:
+            out.append({"location": loc, "error": "expected path:start-end"})
+            continue
+        # Containment check: never read outside the repo root (absolute paths
+        # and ../ escapes would otherwise reach any file on disk).
+        if not (root / path).resolve().is_relative_to(root):
+            out.append({"location": loc, "error": "outside repo"})
+            continue
+        out.append({
+            "path": path,
+            "start_line": start,
+            "end_line": end,
+            "text": _read_slice(root, path, start, end),
+        })
+    return out

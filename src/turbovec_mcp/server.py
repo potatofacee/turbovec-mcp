@@ -1,7 +1,7 @@
 """MCP server exposing turbovec-backed semantic code search.
 
 Tools:
-  - tv_search(query, k=10, path=".", compact=False)  semantic search
+  - tv_search(query, k=10, path=".")                 semantic search
   - tv_index(path=".")                               (re)build the index
   - tv_status(path=".")                              index health
 
@@ -22,17 +22,30 @@ _CFG = load_config()
 
 
 @mcp.tool()
-def tv_search(query: str, k: int = 10, path: str = ".", compact: bool = False) -> dict:
-    """Semantic code search over an indexed repo.
+def tv_search(query: str, k: int = 10, path: str = ".") -> dict:
+    """Semantic code search: terse triage of the nearest chunks.
+
+    Returns score + location (path:start-end) + the chunk's signature line - no
+    source bodies. Pick the locations you want and read them with tv_fetch.
 
     Args:
         query: natural-language or code-ish description of what to find.
         k: number of results.
         path: repo root that was indexed (default: current directory).
-        compact: if true, omit chunk text (return only locations + scores).
     """
-    hits = store.search(Path(path), query, k, _CFG, compact=compact)
+    hits = store.search(Path(path), query, k, _CFG)
     return {"query": query, "count": len(hits), "results": hits}
+
+
+@mcp.tool()
+def tv_fetch(locations: list[str], path: str = ".") -> dict:
+    """Read full source for chunk locations returned by tv_search.
+
+    Args:
+        locations: list of "path:start-end" strings (from tv_search results).
+        path: repo root (default: current directory).
+    """
+    return {"results": store.fetch(Path(path), locations)}
 
 
 @mcp.tool()
@@ -61,9 +74,11 @@ def main() -> None:
     drive it from the terminal for testing:
 
         turbovec-mcp                      # MCP server (for clients)
+        turbovec-mcp init [path]          # initialize a repo
         turbovec-mcp index <path>         # build/rebuild the index
         turbovec-mcp status <path>
-        turbovec-mcp search <path> <query> [-k N] [--compact]
+        turbovec-mcp search <path> <query> [-k N]
+        turbovec-mcp fetch <path> <location...>
     """
     import argparse
     import json
@@ -81,7 +96,8 @@ def main() -> None:
     pq = sub.add_parser("search")
     pq.add_argument("path"); pq.add_argument("query")
     pq.add_argument("-k", type=int, default=10)
-    pq.add_argument("--compact", action="store_true")
+    pf = sub.add_parser("fetch")
+    pf.add_argument("path"); pf.add_argument("locations", nargs="+")
     args = p.parse_args()
 
     if args.cmd is None:
@@ -122,11 +138,16 @@ def main() -> None:
     elif args.cmd == "status":
         print(json.dumps(store.status(Path(args.path)), indent=2))
     elif args.cmd == "search":
-        hits = store.search(Path(args.path), args.query, args.k, _CFG, compact=args.compact)
-        for h in hits:
-            print(f"{h['score']:.3f}  {h['path']}:{h['start_line']}-{h['end_line']}")
-            if not args.compact:
-                print("    " + h["text"].replace("\n", "\n    "))
+        for h in store.search(Path(args.path), args.query, args.k, _CFG):
+            loc = f"{h['path']}:{h['start_line']}-{h['end_line']}"
+            print(f"{h['score']:.3f}  {loc}  {h['signature']}")
+    elif args.cmd == "fetch":
+        for r in store.fetch(Path(args.path), args.locations):
+            if "error" in r:
+                print(f"{r['location']}: {r['error']}")
+                continue
+            print(f"=== {r['path']}:{r['start_line']}-{r['end_line']} ===")
+            print(r["text"])
 
 
 if __name__ == "__main__":

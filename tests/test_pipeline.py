@@ -91,16 +91,30 @@ def test_search_ranking(repo, cfg):
     top = store.search(repo, "launch the model server", k=3, cfg=cfg)[0]
     assert top["path"] == "a.py"
     assert top["start_line"] == 1
-    assert "launch_server" in top["text"]  # text re-read from file
+    assert "launch_server" in top["signature"]  # signature line, not full body
     top2 = store.search(repo, "vector embedding index", k=3, cfg=cfg)[0]
     assert top2["path"] == "b.py"
 
 
-def test_compact_omits_text(repo, cfg):
+def test_search_is_terse(repo, cfg):
     store.build(repo, cfg)
-    hit = store.search(repo, "launch", k=1, cfg=cfg, compact=True)[0]
-    assert "text" not in hit
-    assert "path" in hit and "score" in hit
+    hit = store.search(repo, "launch", k=1, cfg=cfg)[0]
+    assert "text" not in hit  # no bodies in search
+    assert {"path", "score", "signature", "start_line", "end_line"} <= hit.keys()
+
+
+def test_fetch_returns_full_source(repo, cfg):
+    store.build(repo, cfg)
+    hit = store.search(repo, "launch the model server", k=1, cfg=cfg)[0]
+    loc = f"{hit['path']}:{hit['start_line']}-{hit['end_line']}"
+    got = store.fetch(repo, [loc])[0]
+    assert got["path"] == "a.py"
+    assert "launch_server" in got["text"]  # full body on demand
+
+
+def test_fetch_bad_location(repo, cfg):
+    store.build(repo, cfg)
+    assert "error" in store.fetch(repo, ["not-a-location"])[0]
 
 
 def test_k_clamped_to_count(repo, cfg):
@@ -183,7 +197,7 @@ def test_embed_shrinks_on_500(tmp_path):
     from socketserver import TCPServer as _TS
     from turbovec_mcp.embedder import embed as _embed
 
-    LIMIT = 50  # chars; longer single inputs get a 500
+    LIMIT = 400  # chars; longer single inputs 500 (shrink floors at 256, so reachable)
 
     class H(_BH):
         def log_message(self, *a): pass
@@ -208,3 +222,61 @@ def test_embed_shrinks_on_500(tmp_path):
         assert vecs.shape == (4, 16)  # all four returned despite 500s
     finally:
         srv.shutdown()
+
+
+# --- file selection (no embedding server; pure filesystem) ---
+
+def test_seed_config_from_nested_gitignore(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / ".gitignore").write_text("build/\n")
+    cp = chunker.seed_config(tmp_path, _Cfg())
+    assert cp == chunker.config_path(tmp_path)
+    data = json.loads(cp.read_text())
+    exclude = data["exclude"]
+    # nested gitignore "build/" anchored to sub/ -> workspace-relative globs
+    assert any(g.startswith("sub/") and "build" in g for g in exclude)
+    # built-in default skips are baked in too
+    assert "**/node_modules/**" in exclude
+
+
+def test_list_files_default_walk_skips_dep_dirs(tmp_path):
+    (tmp_path / "real.py").write_text("x = 1\n")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "x.py").write_text("y = 2\n")
+    files = {p.name for p in chunker.list_files(tmp_path, _Cfg())}
+    assert "real.py" in files
+    assert "x.py" not in files
+
+
+def test_list_files_honors_config_exclude(tmp_path):
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "vendor" / "v.py").write_text("a = 1\n")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("b = 2\n")
+    cp = chunker.config_path(tmp_path)
+    cp.parent.mkdir(parents=True, exist_ok=True)
+    cp.write_text(json.dumps({"include": [], "exclude": ["vendor/**"]}))
+    rels = {p.relative_to(tmp_path).as_posix() for p in chunker.list_files(tmp_path, _Cfg())}
+    assert "src/a.py" in rels
+    assert "vendor/v.py" not in rels
+
+
+def test_list_files_honors_config_include_whitelist(tmp_path):
+    (tmp_path / "keep").mkdir()
+    (tmp_path / "keep" / "a.py").write_text("a = 1\n")
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "b.py").write_text("b = 2\n")
+    cp = chunker.config_path(tmp_path)
+    cp.parent.mkdir(parents=True, exist_ok=True)
+    cp.write_text(json.dumps({"include": ["keep/**"], "exclude": []}))
+    rels = {p.relative_to(tmp_path).as_posix() for p in chunker.list_files(tmp_path, _Cfg())}
+    assert rels == {"keep/a.py"}
+
+
+def test_seed_config_force_semantics(tmp_path):
+    first = chunker.seed_config(tmp_path, _Cfg())
+    assert first is not None
+    # exists + force=False -> None, file untouched
+    assert chunker.seed_config(tmp_path, _Cfg(), force=False) is None
+    # force=True -> overwrites, returns path
+    assert chunker.seed_config(tmp_path, _Cfg(), force=True) == chunker.config_path(tmp_path)

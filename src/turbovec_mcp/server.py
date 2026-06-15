@@ -23,14 +23,28 @@ _CFG = load_config()
 
 @mcp.tool()
 def tv_search(query: str, k: int = 10, path: str = ".") -> dict:
-    """Semantic code search: terse triage of the nearest chunks.
+    """Fuzzy SEMANTIC code discovery - find code when you can't name it.
 
-    Returns score + location (path:start-end) + the chunk's signature line - no
-    source bodies. Pick the locations you want and read them with tv_fetch.
+    Use this for conceptual/"related to" questions where you do NOT know the
+    symbol or file: "code related to the crossplot viewer", "where is retry
+    backoff handled", "how is auth done". It matches by MEANING (embeddings),
+    so it finds the right code even when the wording differs from the source.
+
+    Pick the right tool:
+      - You can NAME the symbol and want its definition, callers, or impact
+        radius -> use codegraph (exact symbol graph), not this.
+      - You need an exact literal string -> use grep, not this.
+      - You're hunting a feature/concept by description and don't know where it
+        lives -> THIS. It's the fuzzy-discovery tool the others can't replace.
+
+    Returns TERSE hits - `score · path:start-end · signature line`, no source
+    bodies - cheap to scan many (raise k for a broad survey). Step 1 of two:
+    pick the locations that look right, then read them with tv_fetch. Do NOT
+    open these files with Read; use tv_fetch.
 
     Args:
-        query: natural-language or code-ish description of what to find.
-        k: number of results.
+        query: the concept/behavior to find, described in natural language.
+        k: number of hits to return (default 10; raise for a wider survey).
         path: repo root that was indexed (default: current directory).
     """
     hits = store.search(Path(path), query, k, _CFG)
@@ -39,7 +53,12 @@ def tv_search(query: str, k: int = 10, path: str = ".") -> dict:
 
 @mcp.tool()
 def tv_fetch(locations: list[str], path: str = ".") -> dict:
-    """Read full source for chunk locations returned by tv_search.
+    """Read the full source of chunks tv_search found. Step 2 of fuzzy discovery.
+
+    Only used to follow up a tv_search: pass the `path:start-end` strings from
+    its results for the hits you want to read. Returns verbatim source for each -
+    treat it as ALREADY READ; do not re-open those files with the Read tool.
+    Fetch only the few locations you actually need, not every hit.
 
     Args:
         locations: list of "path:start-end" strings (from tv_search results).
@@ -91,6 +110,8 @@ def main() -> None:
     sub = p.add_subparsers(dest="cmd")
     pn = sub.add_parser("init"); pn.add_argument("path", nargs="?", default=".")
     pn.add_argument("-f", "--force", action="store_true")
+    pn.add_argument("--no-register", action="store_true",
+                    help="seed config only; skip writing .mcp.json")
     pi = sub.add_parser("index"); pi.add_argument("path")
     ps = sub.add_parser("status"); ps.add_argument("path")
     pq = sub.add_parser("search")
@@ -105,16 +126,27 @@ def main() -> None:
         return
 
     if args.cmd == "init":
-        from . import chunker
-        cp = chunker.seed_config(Path(args.path), _CFG, force=args.force)
+        from . import chunker, installer
+        root = Path(args.path)
+
+        cp = chunker.seed_config(root, _CFG, force=args.force)
         if cp is None:
-            print(f"config already exists: {chunker.config_path(Path(args.path))} "
-                  f"(use --force to regenerate)")
+            print(f"config exists: {chunker.config_path(root)} (use -f to regenerate)")
         else:
-            sel = chunker.read_selection(Path(args.path)) or {"exclude": []}
-            print(f"wrote {cp}\n  {len(sel['exclude'])} exclude patterns seeded "
-                  f"from default skips + nested .gitignores\n"
-                  f"  edit it, then: turbovec-mcp index {args.path}")
+            sel = chunker.read_selection(root) or {"exclude": []}
+            print(f"wrote {cp}  ({len(sel['exclude'])} exclude patterns seeded "
+                  f"from default skips + nested .gitignores)")
+
+        if not args.no_register:
+            claude = installer.register_claude(root, _CFG, force=args.force)
+            print(f".mcp.json (Claude Code): {claude}")
+            oc = installer.register_opencode(root, _CFG, force=args.force)
+            print(f"opencode.jsonc: {oc}")
+            if oc == "manual":
+                print("  existing opencode.jsonc has comments - paste this under "
+                      "its \"mcp\" key:\n" + installer.opencode_snippet(_CFG))
+
+        print(f"\nnext: turbovec-mcp index {args.path}")
         return
 
     if args.cmd == "index":

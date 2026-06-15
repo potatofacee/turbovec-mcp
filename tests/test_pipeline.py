@@ -280,3 +280,56 @@ def test_seed_config_force_semantics(tmp_path):
     assert chunker.seed_config(tmp_path, _Cfg(), force=False) is None
     # force=True -> overwrites, returns path
     assert chunker.seed_config(tmp_path, _Cfg(), force=True) == chunker.config_path(tmp_path)
+
+
+# --- installer / agent registration (no embedding server; pure filesystem) ---
+
+from turbovec_mcp import installer
+
+
+def test_register_claude_creates_mcp_json(tmp_path):
+    res = installer.register_claude(tmp_path, _Cfg())
+    assert res == "added"
+    data = json.loads((tmp_path / ".mcp.json").read_text())
+    entry = data["mcpServers"]["turbovec"]
+    assert "command" in entry
+    assert "args" in entry
+    assert "TURBOVEC_EMBED_ENDPOINT" in entry["env"]
+
+
+def test_register_claude_preserves_other_servers(tmp_path):
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"other": {"command": "x"}}})
+    )
+    installer.register_claude(tmp_path, _Cfg())
+    servers = json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]
+    assert "other" in servers
+    assert "turbovec" in servers
+
+
+def test_register_claude_idempotent_and_force(tmp_path):
+    assert installer.register_claude(tmp_path, _Cfg()) == "added"
+    assert installer.register_claude(tmp_path, _Cfg()) == "exists"
+    assert installer.register_claude(tmp_path, _Cfg(), force=True) == "added"
+
+
+def test_mcp_env_query_prefix_conditional():
+    # A non-nomic model auto-defaults to no prefix.
+    base = installer.mcp_env(_Cfg(model="bge-small"))
+    assert "TURBOVEC_EMBED_ENDPOINT" in base
+    assert "TURBOVEC_EMBED_MODEL" in base
+    assert "TURBOVEC_QUERY_PREFIX" not in base
+    with_prefix = installer.mcp_env(_Cfg(query_prefix="search_query: "))
+    assert with_prefix["TURBOVEC_QUERY_PREFIX"] == "search_query: "
+
+
+def test_nomic_model_auto_prefixes():
+    c = _Cfg()  # default model is nomic
+    assert c.query_prefix == "search_query: "
+    assert c.doc_prefix == "search_document: "
+    assert _Cfg(model="bge-small").query_prefix == ""
+
+
+def test_opencode_snippet_valid_json_local(tmp_path):
+    block = json.loads(installer.opencode_snippet(_Cfg()))
+    assert block["turbovec"]["type"] == "local"

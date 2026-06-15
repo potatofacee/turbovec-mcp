@@ -70,15 +70,20 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+# Sentinel: env var unset, so we auto-pick a prefix based on the model.
+_AUTO = "\0auto"
+
+
 @dataclass(frozen=True)
 class Config:
     # Embedding endpoint (OpenAI-compatible). No trailing slash.
     endpoint: str = os.environ.get("TURBOVEC_EMBED_ENDPOINT", "http://127.0.0.1:8081/v1")
     model: str = os.environ.get("TURBOVEC_EMBED_MODEL", "nomic-embed-text-v1.5.Q8_0.gguf")
     api_key: str = os.environ.get("TURBOVEC_EMBED_API_KEY", "sk-local")
-    # Some embedders (nomic) want task prefixes. Empty = none.
-    doc_prefix: str = os.environ.get("TURBOVEC_DOC_PREFIX", "")
-    query_prefix: str = os.environ.get("TURBOVEC_QUERY_PREFIX", "")
+    # Task prefixes. nomic models want them; default to nomic's when the model
+    # looks like nomic and the env var is unset, so a bare setup needs no config.
+    doc_prefix: str = os.environ.get("TURBOVEC_DOC_PREFIX", _AUTO)
+    query_prefix: str = os.environ.get("TURBOVEC_QUERY_PREFIX", _AUTO)
 
     # Embedding request batching + timeout.
     batch_size: int = _int("TURBOVEC_BATCH_SIZE", 64)
@@ -95,6 +100,15 @@ class Config:
     window: int = _int("TURBOVEC_CHUNK_LINES", 60)
     overlap: int = _int("TURBOVEC_CHUNK_OVERLAP", 12)
     max_file_mb: float = float(os.environ.get("TURBOVEC_MAX_FILE_MB", "2"))
+
+    def __post_init__(self):
+        # Resolve auto prefixes: nomic wants "search_document:/search_query:";
+        # anything else defaults to none. Frozen dataclass -> object.__setattr__.
+        nomic = "nomic" in self.model.lower()
+        if self.doc_prefix == _AUTO:
+            object.__setattr__(self, "doc_prefix", "search_document: " if nomic else "")
+        if self.query_prefix == _AUTO:
+            object.__setattr__(self, "query_prefix", "search_query: " if nomic else "")
 
     def extensions_resolved(self) -> frozenset[str]:
         extra = os.environ.get("TURBOVEC_EXTRA_EXTENSIONS", "")
